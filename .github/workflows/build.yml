@@ -1,4 +1,4 @@
-name: Build Launcher and Reader APKs
+name: Build Unified Reader Launcher APK
 on:
   push:
     branches: [ main, master ]
@@ -17,15 +17,10 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.4'
-      - name: Build Both APKs
+      - name: Build Unified APK
         run: gradle assembleDebug --stacktrace
-      - name: Upload Launcher APK
+      - name: Upload Unified APK
         uses: actions/upload-artifact@v4
         with:
-          name: Boox-Locked-Launcher-APK
-          path: launcher/build/outputs/apk/debug/*.apk
-      - name: Upload Reader APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: Boox-Locked-Reader-APK
-          path: reader/build/outputs/apk/debug/*.apk
+          name: Boox-Unified-Reader-APK
+          path: app/build/outputs/apk/debug/*.apk
