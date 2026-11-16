@@ -1,6 +1,7 @@
 package com.locked.launcher
 
 import android.app.AlertDialog
+import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -9,21 +10,17 @@ import android.graphics.*
 import android.graphics.drawable.GradientDrawable
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
-import android.os.Build
-import android.os.Bundle
-import android.os.Environment
-import android.os.ParcelFileDescriptor
+import android.os.*
 import android.provider.Settings
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
-import android.view.LayoutInflater
-import android.view.View
-import android.view.ViewGroup
-import android.view.WindowManager
+import android.view.*
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import java.io.File
+import java.io.FileInputStream
+import java.util.Properties
 import java.util.zip.ZipFile
 
 class MainActivity : AppCompatActivity() {
@@ -43,6 +40,17 @@ class MainActivity : AppCompatActivity() {
     private var allBooks: List<File> = emptyList()
     private var allApps: List<ResolveInfo> = emptyList()
     private val coverCache = mutableMapOf<String, Bitmap>()
+    private val progressMap = Properties()
+
+    private val autoLockHandler = Handler(Looper.getMainLooper())
+    private val autoLockRunnable = Runnable {
+        if (isUnlocked) {
+            isUnlocked = false
+            showingAppsMode = false
+            applyLockState()
+            Toast.makeText(this, "تم القفل التلقائي", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -50,6 +58,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         requestStoragePermission()
+        setupKioskPolicyIfOwner()
 
         prefs = getSharedPreferences("LauncherPrefs", Context.MODE_PRIVATE)
         tvHeaderTitle = findViewById(R.id.tvHeaderTitle)
@@ -62,10 +71,12 @@ class MainActivity : AppCompatActivity() {
         btnLockToggle = findViewById(R.id.btnLockToggle)
 
         loadBooks()
+        loadProgressData()
         loadInstalledApps()
         applyLockState()
 
         btnLockToggle.setOnClickListener {
+            resetAutoLockTimer()
             if (isUnlocked) {
                 isUnlocked = false
                 showingAppsMode = false
@@ -77,6 +88,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnToggleAppsView.setOnClickListener {
+            resetAutoLockTimer()
             showingAppsMode = !showingAppsMode
             btnToggleAppsView.text = if (showingAppsMode) "عرض الكتب" else "التطبيقات"
             tvHeaderTitle.text = if (showingAppsMode) "التطبيقات" else "المكتبة"
@@ -84,11 +96,21 @@ class MainActivity : AppCompatActivity() {
             refreshGrid("")
         }
 
-        btnSystemSettings.setOnClickListener { startActivity(Intent(Settings.ACTION_SETTINGS)) }
-        btnWifi.setOnClickListener { startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
+        btnSystemSettings.setOnClickListener {
+            resetAutoLockTimer()
+            startActivity(Intent(Settings.ACTION_SETTINGS))
+        }
+
+        btnWifi.setOnClickListener {
+            resetAutoLockTimer()
+            startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
+        }
 
         searchBar.addTextChangedListener(object : TextWatcher {
-            override fun afterTextChanged(s: Editable?) { refreshGrid(s.toString()) }
+            override fun afterTextChanged(s: Editable?) {
+                resetAutoLockTimer()
+                refreshGrid(s.toString())
+            }
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
         })
@@ -97,7 +119,44 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         loadBooks()
+        loadProgressData()
         if (!showingAppsMode) refreshGrid(searchBar.text.toString())
+        updateKioskLockState()
+    }
+
+    override fun onUserInteraction() {
+        super.onUserInteraction()
+        if (isUnlocked) resetAutoLockTimer()
+    }
+
+    private fun resetAutoLockTimer() {
+        autoLockHandler.removeCallbacks(autoLockRunnable)
+        if (isUnlocked) {
+            autoLockHandler.postDelayed(autoLockRunnable, 120_000L) // دقيقتان
+        }
+    }
+
+    private fun setupKioskPolicyIfOwner() {
+        try {
+            val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+            val admin = ComponentName(this, AdminReceiver::class.java)
+            if (dpm.isDeviceOwnerApp(packageName)) {
+                dpm.setLockTaskPackages(admin, arrayOf(packageName, "com.locked.reader"))
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun updateKioskLockState() {
+        try {
+            val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+            if (dpm.isDeviceOwnerApp(packageName)) {
+                if (isUnlocked) {
+                    stopLockTask()
+                } else {
+                    startLockTask()
+                }
+            }
+        } catch (_: Exception) {}
     }
 
     private fun requestStoragePermission() {
@@ -120,7 +179,9 @@ class MainActivity : AppCompatActivity() {
             btnToggleAppsView.visibility = View.VISIBLE
             btnSystemSettings.visibility = View.VISIBLE
             btnWifi.visibility = View.VISIBLE
+            resetAutoLockTimer()
         } else {
+            autoLockHandler.removeCallbacks(autoLockRunnable)
             btnLockToggle.setImageResource(android.R.drawable.ic_lock_lock)
             tvHeaderTitle.text = "المكتبة"
             searchBar.visibility = if (allowSearch) View.VISIBLE else View.GONE
@@ -129,6 +190,7 @@ class MainActivity : AppCompatActivity() {
             btnSystemSettings.visibility = View.GONE
             topControlBar.visibility = if (allowSearch || allowWifi) View.VISIBLE else View.GONE
         }
+        updateKioskLockState()
         refreshGrid("")
     }
 
@@ -138,6 +200,16 @@ class MainActivity : AppCompatActivity() {
         allBooks = booksDir.listFiles { f ->
             f.extension.lowercase() in listOf("pdf", "epub", "txt")
         }?.sortedBy { it.name } ?: emptyList()
+    }
+
+    private fun loadProgressData() {
+        progressMap.clear()
+        val stateFile = File(Environment.getExternalStorageDirectory(), "MyBooks/.reader_state.properties")
+        if (stateFile.exists()) {
+            try {
+                FileInputStream(stateFile).use { progressMap.load(it) }
+            } catch (_: Exception) {}
+        }
     }
 
     private fun loadInstalledApps() {
@@ -172,6 +244,7 @@ class MainActivity : AppCompatActivity() {
 
         gridBooksOrApps.setOnItemLongClickListener { _, _, position, _ ->
             if (isUnlocked && filteredBooks.isNotEmpty()) {
+                resetAutoLockTimer()
                 val bookName = filteredBooks[position].name
                 val currentHidden = hiddenBooks.toMutableSet()
                 if (bookName in currentHidden) {
@@ -203,9 +276,9 @@ class MainActivity : AppCompatActivity() {
             val book = books[position]
             val ivCover = view.findViewById<ImageView>(R.id.ivBookCover)
             val tvFormat = view.findViewById<TextView>(R.id.tvBookFormat)
+            val tvProgress = view.findViewById<TextView>(R.id.tvBookProgress)
             val tvTitle = view.findViewById<TextView>(R.id.tvBookTitle)
 
-            // إضافة إطار أسود حاد للغلاف وشارة الصيغة مثل أجهزة Boox
             val border = GradientDrawable().apply {
                 setColor(Color.WHITE)
                 setStroke(3, Color.BLACK)
@@ -219,6 +292,10 @@ class MainActivity : AppCompatActivity() {
             tvFormat.background = badgeBorder
             tvFormat.text = book.extension.lowercase()
 
+            tvProgress.background = badgeBorder
+            val pct = progressMap.getProperty("pct_${book.name}", "0")
+            tvProgress.text = "$pct%"
+
             val prefix = if (isUnlocked && book.name in hiddenBooks) "[مخفي] " else ""
             tvTitle.text = "$prefix${book.nameWithoutExtension}"
 
@@ -229,13 +306,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun getBookCoverBitmap(file: File): Bitmap {
         coverCache[file.absolutePath]?.let { return it }
-
         val bmp: Bitmap? = when (file.extension.lowercase()) {
             "pdf" -> extractPdfCover(file)
             "epub" -> extractEpubCover(file)
             else -> null
         }
-
         val finalBmp = bmp ?: createFallbackCover(file.nameWithoutExtension)
         coverCache[file.absolutePath] = finalBmp
         return finalBmp
@@ -255,13 +330,9 @@ class MainActivity : AppCompatActivity() {
                 pfd.close()
                 bitmap
             } else {
-                renderer.close()
-                pfd.close()
-                null
+                renderer.close(); pfd.close(); null
             }
-        } catch (_: Exception) {
-            null
-        }
+        } catch (_: Exception) { null }
     }
 
     private fun extractEpubCover(file: File): Bitmap? {
@@ -274,16 +345,9 @@ class MainActivity : AppCompatActivity() {
                 } ?: entries.firstOrNull {
                     !it.isDirectory && (it.name.endsWith(".jpg", true) || it.name.endsWith(".jpeg", true) || it.name.endsWith(".png", true))
                 }
-
-                if (coverEntry != null) {
-                    zip.getInputStream(coverEntry).use { stream ->
-                        BitmapFactory.decodeStream(stream)
-                    }
-                } else null
+                if (coverEntry != null) zip.getInputStream(coverEntry).use { BitmapFactory.decodeStream(it) } else null
             }
-        } catch (_: Exception) {
-            null
-        }
+        } catch (_: Exception) { null }
     }
 
     private fun createFallbackCover(title: String): Bitmap {
@@ -342,8 +406,9 @@ class MainActivity : AppCompatActivity() {
         val features = arrayOf("إظهار بحث الكتب أثناء القفل", "إظهار الواي فاي أثناء القفل")
         val checked = booleanArrayOf(prefs.getBoolean("ALLOW_SEARCH", false), prefs.getBoolean("ALLOW_WIFI", false))
         AlertDialog.Builder(this)
-            .setTitle("تخصيص وضع القفل (اضغط مطولاً على أي كتاب لإخفائه)")
+            .setTitle("تخصيص وضع القفل (اضغط مطولاً على كتاب لإخفائه)")
             .setMultiChoiceItems(features, checked) { _, which, isChecked ->
+                resetAutoLockTimer()
                 if (which == 0) prefs.edit().putBoolean("ALLOW_SEARCH", isChecked).apply()
                 if (which == 1) prefs.edit().putBoolean("ALLOW_WIFI", isChecked).apply()
             }
@@ -358,6 +423,18 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("حفظ") { _, _ ->
                 if (input.text.isNotBlank()) prefs.edit().putString("PIN_CODE", input.text.toString()).apply()
             }.show()
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        return when (keyCode) {
+            KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_PAGE_DOWN -> {
+                gridBooksOrApps.smoothScrollBy(450, 0); true
+            }
+            KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_PAGE_UP -> {
+                gridBooksOrApps.smoothScrollBy(-450, 0); true
+            }
+            else -> super.onKeyDown(keyCode, event)
+        }
     }
 
     override fun onBackPressed() {}

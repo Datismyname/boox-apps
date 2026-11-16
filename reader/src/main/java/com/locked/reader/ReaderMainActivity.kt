@@ -7,20 +7,19 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
-import android.os.Build
-import android.os.Bundle
-import android.os.Environment
-import android.os.ParcelFileDescriptor
+import android.os.*
 import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.text.Html
 import android.text.InputType
-import android.view.View
-import android.view.WindowManager
+import android.view.*
 import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.util.*
 import java.util.zip.ZipFile
 
@@ -28,18 +27,21 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private lateinit var prefs: android.content.SharedPreferences
     private lateinit var epubWebView: WebView
-    private lateinit var pdfScrollView: ScrollView
     private lateinit var pdfImageView: ImageView
+    private lateinit var touchZoneRight: View
+    private lateinit var touchZoneLeft: View
+    private lateinit var tvPageStatus: TextView
+    private lateinit var tvBatteryStatus: TextView
 
-    private lateinit var btnHomeLauncher: Button
+    private lateinit var btnHomeLauncher: ImageButton
+    private lateinit var btnReaderLock: ImageButton
     private lateinit var btnZoomIn: Button
     private lateinit var btnZoomOut: Button
-    private lateinit var btnPrevPage: Button
-    private lateinit var btnNextPage: Button
+    private lateinit var btnSaveBookmark: Button
+    private lateinit var btnGotoBookmark: Button
     private lateinit var btnDarkMode: Button
     private lateinit var btnLineSpacing: Button
     private lateinit var btnSpeak: Button
-    private lateinit var btnReaderLock: ImageButton
 
     private var isUnlocked = false
     private var fontSize = 26
@@ -48,6 +50,7 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var lineSpacing = 1.4f
     private var currentHtmlContent = ""
     private var currentMode = "TEXT"
+    private var currentBookFile: File? = null
 
     private var pdfRenderer: PdfRenderer? = null
     private var currentPdfPageIndex = 0
@@ -55,8 +58,20 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private var epubChapters: List<String> = emptyList()
     private var currentChapterIndex = 0
+    private var currentTextPage = 0
+    private var totalTextPages = 1
 
     private var tts: TextToSpeech? = null
+    private val stateProps = Properties()
+
+    private val autoLockHandler = Handler(Looper.getMainLooper())
+    private val autoLockRunnable = Runnable {
+        if (isUnlocked) {
+            isUnlocked = false
+            updateToolbarVisibility()
+            Toast.makeText(this, "تم القفل التلقائي لإعدادات القارئ", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -64,31 +79,42 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         setContentView(R.layout.activity_reader_main)
 
         requestStoragePermission()
-
         prefs = getSharedPreferences("BookReaderPrefs", Context.MODE_PRIVATE)
+        applyKeepScreenOnPolicy()
         tts = TextToSpeech(this, this)
 
         epubWebView = findViewById(R.id.epubWebView)
-        pdfScrollView = findViewById(R.id.pdfScrollView)
         pdfImageView = findViewById(R.id.pdfImageView)
+        touchZoneRight = findViewById(R.id.touchZoneRight)
+        touchZoneLeft = findViewById(R.id.touchZoneLeft)
+        tvPageStatus = findViewById(R.id.tvPageStatus)
+        tvBatteryStatus = findViewById(R.id.tvBatteryStatus)
 
         btnHomeLauncher = findViewById(R.id.btnHomeLauncher)
+        btnReaderLock = findViewById(R.id.btnReaderLock)
         btnZoomIn = findViewById(R.id.btnZoomIn)
         btnZoomOut = findViewById(R.id.btnZoomOut)
-        btnPrevPage = findViewById(R.id.btnPrevPage)
-        btnNextPage = findViewById(R.id.btnNextPage)
+        btnSaveBookmark = findViewById(R.id.btnSaveBookmark)
+        btnGotoBookmark = findViewById(R.id.btnGotoBookmark)
         btnDarkMode = findViewById(R.id.btnDarkMode)
         btnLineSpacing = findViewById(R.id.btnLineSpacing)
         btnSpeak = findViewById(R.id.btnSpeak)
-        btnReaderLock = findViewById(R.id.btnReaderLock)
 
         epubWebView.settings.javaScriptEnabled = false
+        epubWebView.isVerticalScrollBarEnabled = false
         fontSize = prefs.getInt("FONT_SIZE", 26)
 
+        loadStateProps()
+        updateBatteryDisplay()
         handleIncomingIntent(intent)
         updateToolbarVisibility()
 
+        // مناطق اللمس الجانبية لتقليب الصفحات بسلاسة (اليسار = التالي، اليمين = السابق)
+        touchZoneLeft.setOnClickListener { handleNextPage() }
+        touchZoneRight.setOnClickListener { handlePrevPage() }
+
         btnHomeLauncher.setOnClickListener {
+            saveCurrentReadingPosition()
             val homeIntent = Intent(Intent.ACTION_MAIN).apply {
                 addCategory(Intent.CATEGORY_HOME)
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
@@ -99,7 +125,7 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         btnZoomIn.setOnClickListener {
             if (currentMode == "PDF") {
-                if (pdfZoomScale < 2.5f) {
+                if (pdfZoomScale < 2.2f) {
                     pdfZoomScale += 0.25f
                     renderPdfPage(currentPdfPageIndex)
                 }
@@ -123,25 +149,8 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
         }
 
-        btnPrevPage.setOnClickListener {
-            if (currentMode == "PDF" && currentPdfPageIndex > 0) {
-                renderPdfPage(currentPdfPageIndex - 1)
-            } else if (currentMode == "EPUB" && currentChapterIndex > 0) {
-                currentChapterIndex--
-                currentHtmlContent = epubChapters[currentChapterIndex]
-                refreshWebViewContent()
-            }
-        }
-
-        btnNextPage.setOnClickListener {
-            if (currentMode == "PDF" && pdfRenderer != null && currentPdfPageIndex < pdfRenderer!!.pageCount - 1) {
-                renderPdfPage(currentPdfPageIndex + 1)
-            } else if (currentMode == "EPUB" && currentChapterIndex < epubChapters.size - 1) {
-                currentChapterIndex++
-                currentHtmlContent = epubChapters[currentChapterIndex]
-                refreshWebViewContent()
-            }
-        }
+        btnSaveBookmark.setOnClickListener { saveBookmarkForCurrentBook() }
+        btnGotoBookmark.setOnClickListener { gotoBookmarkForCurrentBook() }
 
         btnDarkMode.setOnClickListener {
             isDark = !isDark
@@ -155,9 +164,8 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
 
         btnSpeak.setOnClickListener {
-            if (tts?.isSpeaking == true) {
-                tts?.stop()
-            } else {
+            if (tts?.isSpeaking == true) tts?.stop()
+            else {
                 val plainText = Html.fromHtml(currentHtmlContent, Html.FROM_HTML_MODE_LEGACY).toString().take(3500)
                 tts?.speak(plainText, TextToSpeech.QUEUE_FLUSH, null, "BOOK_TTS")
             }
@@ -174,79 +182,86 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
+    override fun onUserInteraction() {
+        super.onUserInteraction()
+        updateBatteryDisplay()
+        if (isUnlocked) resetAutoLockTimer()
+    }
+
+    private fun resetAutoLockTimer() {
+        autoLockHandler.removeCallbacks(autoLockRunnable)
+        if (isUnlocked) autoLockHandler.postDelayed(autoLockRunnable, 120_000L)
+    }
+
+    private fun applyKeepScreenOnPolicy() {
+        if (prefs.getBoolean("KEEP_SCREEN_ON", true)) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    private fun updateBatteryDisplay() {
+        val bm = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+        val level = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        if (level in 0..100) tvBatteryStatus.text = "البطارية: $level%"
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        saveCurrentReadingPosition()
         setIntent(intent)
         handleIncomingIntent(intent)
     }
 
     private fun handleIncomingIntent(intent: Intent?) {
         val path = intent?.getStringExtra("BOOK_PATH")
-        if (path != null) {
-            val file = File(path)
-            if (file.exists()) {
-                openBookFile(file)
-                return
-            }
+        if (path != null && File(path).exists()) {
+            openBookFile(File(path))
+            return
         }
-        loadLastOrFirstBook()
+        val booksDir = File(Environment.getExternalStorageDirectory(), "MyBooks")
+        val first = booksDir.listFiles { f -> f.extension.lowercase() in listOf("pdf", "epub", "txt") }?.firstOrNull()
+        if (first != null) openBookFile(first)
     }
 
     private fun openBookFile(file: File) {
         closePdfRenderer()
+        currentBookFile = file
+        loadStateProps()
+
         when (file.extension.lowercase()) {
             "pdf" -> {
                 currentMode = "PDF"
                 epubWebView.visibility = View.GONE
-                pdfScrollView.visibility = View.VISIBLE
-                btnPrevPage.visibility = View.VISIBLE
-                btnNextPage.visibility = View.VISIBLE
+                pdfImageView.visibility = View.VISIBLE
                 pdfZoomScale = 1.0f
                 pdfFileDescriptor = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
                 pdfRenderer = PdfRenderer(pdfFileDescriptor!!)
-                renderPdfPage(0)
+                val savedPage = stateProps.getProperty("page_${file.name}", "0").toIntOrNull() ?: 0
+                renderPdfPage(savedPage.coerceIn(0, (pdfRenderer!!.pageCount - 1).coerceAtLeast(0)))
             }
             "epub" -> {
                 currentMode = "EPUB"
-                pdfScrollView.visibility = View.GONE
+                pdfImageView.visibility = View.GONE
                 epubWebView.visibility = View.VISIBLE
                 epubChapters = extractEpubChapters(file)
-                currentChapterIndex = 0
-                val hasMultiChapters = epubChapters.size > 1
-                btnPrevPage.visibility = if (hasMultiChapters) View.VISIBLE else View.GONE
-                btnNextPage.visibility = if (hasMultiChapters) View.VISIBLE else View.GONE
-                currentHtmlContent = epubChapters.firstOrNull() ?: "<p>تعذر قراءة ملف EPUB</p>"
+                val savedChap = stateProps.getProperty("chap_${file.name}", "0").toIntOrNull() ?: 0
+                currentChapterIndex = savedChap.coerceIn(0, (epubChapters.size - 1).coerceAtLeast(0))
+                currentTextPage = stateProps.getProperty("tpage_${file.name}", "0").toIntOrNull() ?: 0
+                currentHtmlContent = epubChapters.getOrNull(currentChapterIndex) ?: "<p>تعذر قراءة الكتاب</p>"
                 refreshWebViewContent()
             }
             else -> {
                 currentMode = "TEXT"
-                pdfScrollView.visibility = View.GONE
+                pdfImageView.visibility = View.GONE
                 epubWebView.visibility = View.VISIBLE
-                btnPrevPage.visibility = View.GONE
-                btnNextPage.visibility = View.GONE
+                currentTextPage = stateProps.getProperty("tpage_${file.name}", "0").toIntOrNull() ?: 0
                 val escaped = file.readText().replace("\n", "<br/>")
                 currentHtmlContent = "<p>$escaped</p>"
                 refreshWebViewContent()
             }
         }
-    }
-
-    private fun extractEpubChapters(file: File): List<String> {
-        val chapters = mutableListOf<String>()
-        try {
-            ZipFile(file).use { zip ->
-                val entries = zip.entries().toList()
-                    .filter { !it.isDirectory && (it.name.endsWith(".html", true) || it.name.endsWith(".xhtml", true) || it.name.endsWith(".htm", true)) }
-                    .sortedBy { it.name }
-                for (entry in entries) {
-                    val text = zip.getInputStream(entry).bufferedReader().use { it.readText() }
-                    chapters.add(text)
-                }
-            }
-        } catch (e: Exception) {
-            chapters.add("<p>خطأ في فتح الكتاب: ${e.message}</p>")
-        }
-        return chapters
     }
 
     private fun renderPdfPage(index: Int) {
@@ -263,7 +278,8 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         page.close()
 
         pdfImageView.setImageBitmap(bitmap)
-        pdfScrollView.scrollTo(0, 0)
+        tvPageStatus.text = "صفحة ${index + 1} من ${renderer.pageCount}"
+        saveCurrentReadingPosition()
     }
 
     private fun refreshWebViewContent() {
@@ -279,7 +295,7 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     color: $fg;
                     font-size: ${fontSize}px;
                     line-height: $lineSpacing;
-                    padding: 20px;
+                    padding: 20px 28px;
                     font-family: sans-serif;
                     word-wrap: break-word;
                 }
@@ -289,16 +305,160 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             <body>$currentHtmlContent</body>
             </html>
         """.trimIndent()
+
+        epubWebView.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+                epubWebView.postDelayed({
+                    val pageH = epubWebView.height.coerceAtLeast(1)
+                    val totalH = (epubWebView.contentHeight * epubWebView.scale).toInt().coerceAtLeast(pageH)
+                    totalTextPages = ((totalH + pageH - 1) / pageH).coerceAtLeast(1)
+                    if (currentTextPage >= totalTextPages) currentTextPage = totalTextPages - 1
+                    epubWebView.scrollTo(0, currentTextPage * pageH)
+                    updateWebPageStatus()
+                }, 150)
+            }
+        }
         epubWebView.loadDataWithBaseURL(null, styledHtml, "text/html", "UTF-8", null)
     }
 
-    private fun closePdfRenderer() {
+    private fun updateWebPageStatus() {
+        val chapInfo = if (currentMode == "EPUB" && epubChapters.size > 1) " (فصل ${currentChapterIndex + 1}/${epubChapters.size})" else ""
+        tvPageStatus.text = "صفحة ${currentTextPage + 1} من $totalTextPages$chapInfo"
+        saveCurrentReadingPosition()
+    }
+
+    private fun handleNextPage() {
+        if (currentMode == "PDF") {
+            if (pdfRenderer != null && currentPdfPageIndex < pdfRenderer!!.pageCount - 1) {
+                renderPdfPage(currentPdfPageIndex + 1)
+            }
+        } else {
+            val pageH = epubWebView.height
+            if (currentTextPage < totalTextPages - 1) {
+                currentTextPage++
+                epubWebView.scrollTo(0, currentTextPage * pageH)
+                updateWebPageStatus()
+            } else if (currentMode == "EPUB" && currentChapterIndex < epubChapters.size - 1) {
+                currentChapterIndex++
+                currentTextPage = 0
+                currentHtmlContent = epubChapters[currentChapterIndex]
+                refreshWebViewContent()
+            }
+        }
+    }
+
+    private fun handlePrevPage() {
+        if (currentMode == "PDF") {
+            if (currentPdfPageIndex > 0) renderPdfPage(currentPdfPageIndex - 1)
+        } else {
+            val pageH = epubWebView.height
+            if (currentTextPage > 0) {
+                currentTextPage--
+                epubWebView.scrollTo(0, currentTextPage * pageH)
+                updateWebPageStatus()
+            } else if (currentMode == "EPUB" && currentChapterIndex > 0) {
+                currentChapterIndex--
+                currentTextPage = 0
+                currentHtmlContent = epubChapters[currentChapterIndex]
+                refreshWebViewContent()
+            }
+        }
+    }
+
+    private fun saveCurrentReadingPosition() {
+        val file = currentBookFile ?: return
+        var pct = 0
+        if (currentMode == "PDF" && pdfRenderer != null && pdfRenderer!!.pageCount > 0) {
+            stateProps.setProperty("page_${file.name}", currentPdfPageIndex.toString())
+            pct = (((currentPdfPageIndex + 1) * 100) / pdfRenderer!!.pageCount).coerceIn(0, 100)
+        } else {
+            stateProps.setProperty("chap_${file.name}", currentChapterIndex.toString())
+            stateProps.setProperty("tpage_${file.name}", currentTextPage.toString())
+            pct = if (currentMode == "EPUB" && epubChapters.isNotEmpty()) {
+                (((currentChapterIndex + 1) * 100) / epubChapters.size).coerceIn(0, 100)
+            } else {
+                (((currentTextPage + 1) * 100) / totalTextPages.coerceAtLeast(1)).coerceIn(0, 100)
+            }
+        }
+        stateProps.setProperty("pct_${file.name}", pct.toString())
+        persistStateProps()
+    }
+
+    private fun saveBookmarkForCurrentBook() {
+        val file = currentBookFile ?: return
+        if (currentMode == "PDF") {
+            stateProps.setProperty("bm_page_${file.name}", currentPdfPageIndex.toString())
+        } else {
+            stateProps.setProperty("bm_chap_${file.name}", currentChapterIndex.toString())
+            stateProps.setProperty("bm_tpage_${file.name}", currentTextPage.toString())
+        }
+        persistStateProps()
+        Toast.makeText(this, "تم حفظ الإشارة المرجعية", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun gotoBookmarkForCurrentBook() {
+        val file = currentBookFile ?: return
+        if (currentMode == "PDF") {
+            val bmPage = stateProps.getProperty("bm_page_${file.name}")?.toIntOrNull()
+            if (bmPage != null) {
+                renderPdfPage(bmPage)
+                Toast.makeText(this, "تم الانتقال للإشارة المحفوظة", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "لا توجد علامة محفوظة لهذا الكتاب", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            val bmChap = stateProps.getProperty("bm_chap_${file.name}")?.toIntOrNull()
+            val bmTpage = stateProps.getProperty("bm_tpage_${file.name}")?.toIntOrNull()
+            if (bmTpage != null) {
+                currentChapterIndex = bmChap ?: 0
+                currentTextPage = bmTpage
+                if (currentMode == "EPUB" && epubChapters.isNotEmpty()) {
+                    currentHtmlContent = epubChapters[currentChapterIndex.coerceIn(0, epubChapters.size - 1)]
+                }
+                refreshWebViewContent()
+                Toast.makeText(this, "تم الانتقال للإشارة المحفوظة", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "لا توجد علامة محفوظة لهذا الكتاب", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun loadStateProps() {
+        val stateFile = File(Environment.getExternalStorageDirectory(), "MyBooks/.reader_state.properties")
+        if (stateFile.exists()) {
+            try { FileInputStream(stateFile).use { stateProps.load(it) } } catch (_: Exception) {}
+        }
+    }
+
+    private fun persistStateProps() {
         try {
-            pdfRenderer?.close()
-            pdfFileDescriptor?.close()
+            val booksDir = File(Environment.getExternalStorageDirectory(), "MyBooks")
+            if (!booksDir.exists()) booksDir.mkdirs()
+            val stateFile = File(booksDir, ".reader_state.properties")
+            FileOutputStream(stateFile).use { stateProps.store(it, "Reader State") }
         } catch (_: Exception) {}
-        pdfRenderer = null
-        pdfFileDescriptor = null
+    }
+
+    private fun extractEpubChapters(file: File): List<String> {
+        val chapters = mutableListOf<String>()
+        try {
+            ZipFile(file).use { zip ->
+                val entries = zip.entries().toList()
+                    .filter { !it.isDirectory && (it.name.endsWith(".html", true) || it.name.endsWith(".xhtml", true) || it.name.endsWith(".htm", true)) }
+                    .sortedBy { it.name }
+                for (entry in entries) {
+                    chapters.add(zip.getInputStream(entry).bufferedReader().use { it.readText() })
+                }
+            }
+        } catch (e: Exception) {
+            chapters.add("<p>خطأ في فتح الكتاب: ${e.message}</p>")
+        }
+        return chapters
+    }
+
+    private fun closePdfRenderer() {
+        try { pdfRenderer?.close(); pdfFileDescriptor?.close() } catch (_: Exception) {}
+        pdfRenderer = null; pdfFileDescriptor = null
     }
 
     private fun requestStoragePermission() {
@@ -316,11 +476,18 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         if (isUnlocked) {
             btnReaderLock.setImageResource(android.R.drawable.ic_partial_secure)
+            btnSaveBookmark.visibility = View.VISIBLE
+            btnGotoBookmark.visibility = View.VISIBLE
             btnDarkMode.visibility = View.VISIBLE
             btnLineSpacing.visibility = View.VISIBLE
             btnSpeak.visibility = View.VISIBLE
+            resetAutoLockTimer()
         } else {
+            autoLockHandler.removeCallbacks(autoLockRunnable)
             btnReaderLock.setImageResource(android.R.drawable.ic_lock_lock)
+            val showBm = prefs.getBoolean("SHOW_BOOKMARKS", true)
+            btnSaveBookmark.visibility = if (showBm) View.VISIBLE else View.GONE
+            btnGotoBookmark.visibility = if (showBm) View.VISIBLE else View.GONE
             btnDarkMode.visibility = if (prefs.getBoolean("SHOW_DARK", false)) View.VISIBLE else View.GONE
             btnLineSpacing.visibility = if (prefs.getBoolean("SHOW_SPACING", false)) View.VISIBLE else View.GONE
             btnSpeak.visibility = if (prefs.getBoolean("SHOW_TTS", false)) View.VISIBLE else View.GONE
@@ -352,21 +519,34 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun showAllowedControlsDialog() {
-        val options = arrayOf("إظهار الوضع الليلي", "إظهار تباعد الأسطر", "إظهار القراءة الصوتية")
+        val options = arrayOf(
+            "إظهار أزرار الإشارة المرجعية",
+            "إظهار الوضع الليلي",
+            "إظهار تباعد الأسطر",
+            "إظهار القراءة الصوتية",
+            "منع انطفاء الشاشة أثناء القراءة"
+        )
         val states = booleanArrayOf(
+            prefs.getBoolean("SHOW_BOOKMARKS", true),
             prefs.getBoolean("SHOW_DARK", false),
             prefs.getBoolean("SHOW_SPACING", false),
-            prefs.getBoolean("SHOW_TTS", false)
+            prefs.getBoolean("SHOW_TTS", false),
+            prefs.getBoolean("KEEP_SCREEN_ON", true)
         )
         AlertDialog.Builder(this)
-            .setTitle("اختر الأزرار المسموح بظهورها خارج القفل")
+            .setTitle("تخصيص القارئ")
             .setMultiChoiceItems(options, states) { _, which, isChecked ->
-                val key = when (which) {
-                    0 -> "SHOW_DARK"
-                    1 -> "SHOW_SPACING"
-                    else -> "SHOW_TTS"
+                resetAutoLockTimer()
+                when (which) {
+                    0 -> prefs.edit().putBoolean("SHOW_BOOKMARKS", isChecked).apply()
+                    1 -> prefs.edit().putBoolean("SHOW_DARK", isChecked).apply()
+                    2 -> prefs.edit().putBoolean("SHOW_SPACING", isChecked).apply()
+                    3 -> prefs.edit().putBoolean("SHOW_TTS", isChecked).apply()
+                    4 -> {
+                        prefs.edit().putBoolean("KEEP_SCREEN_ON", isChecked).apply()
+                        applyKeepScreenOnPolicy()
+                    }
                 }
-                prefs.edit().putBoolean(key, isChecked).apply()
             }
             .setNeutralButton("تغيير الرمز") { _, _ -> changePinDialog() }
             .setPositiveButton("تم", null)
@@ -381,15 +561,17 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }.show()
     }
 
-    private fun loadLastOrFirstBook() {
-        val booksDir = File(Environment.getExternalStorageDirectory(), "MyBooks")
-        if (!booksDir.exists()) booksDir.mkdirs()
-        val files = booksDir.listFiles { f -> f.extension.lowercase() in listOf("txt", "epub", "pdf") }
-        if (!files.isNullOrEmpty()) openBookFile(files[0])
-        else {
-            currentHtmlContent = "<p>اختر كتاباً من المكتبة للبدء.</p>"
-            refreshWebViewContent()
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        return when (keyCode) {
+            KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_PAGE_DOWN -> { handleNextPage(); true }
+            KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_PAGE_UP -> { handlePrevPage(); true }
+            else -> super.onKeyDown(keyCode, event)
         }
+    }
+
+    override fun onPause() {
+        saveCurrentReadingPosition()
+        super.onPause()
     }
 
     override fun onInit(status: Int) { if (status == TextToSpeech.SUCCESS) tts?.language = Locale("ar") }
