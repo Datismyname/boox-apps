@@ -4,29 +4,29 @@
     android:layout_height="match_parent"
     android:orientation="vertical"
     android:background="#FFFFFF"
-    android:padding="16dp">
+    android:padding="12dp">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:gravity="center_vertical"
-        android:paddingBottom="12dp">
+        android:paddingBottom="10dp">
 
         <TextView
             android:id="@+id/tvHeaderTitle"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="مكتبتي"
-            android:textSize="28sp"
+            android:text="المكتبة"
+            android:textSize="26sp"
             android:textStyle="bold"
             android:textColor="#000000" />
 
         <ImageButton
             android:id="@+id/btnLockToggle"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
             android:background="#EEEEEE"
             android:src="@android:drawable/ic_lock_lock"
             android:contentDescription="قفل" />
@@ -38,14 +38,14 @@
         android:layout_height="wrap_content"
         android:orientation="vertical"
         android:visibility="gone"
-        android:paddingBottom="12dp">
+        android:paddingBottom="10dp">
 
         <EditText
             android:id="@+id/searchBar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="بحث عن كتاب..."
-            android:textSize="20sp"
+            android:hint="بحث في الكتب..."
+            android:textSize="18sp"
             android:textColor="#000000" />
 
         <LinearLayout
@@ -58,28 +58,30 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:text="التطبيقات"
-                android:textSize="16sp" />
+                android:textSize="15sp" />
             <Button
                 android:id="@+id/btnWifi"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:text="الواي فاي"
-                android:textSize="16sp" />
+                android:textSize="15sp" />
             <Button
                 android:id="@+id/btnSystemSettings"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                :layout_weight="1"
+                android:layout_weight="1"
                 android:text="النظام"
-                android:textSize="16sp" />
+                android:textSize="15sp" />
         </LinearLayout>
     </LinearLayout>
 
-    <ListView
-        android:id="@+id/listBooksOrApps"
+    <GridView
+        android:id="@+id/gridBooksOrApps"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:divider="#CCCCCC"
-        android:dividerHeight="1dp" />
+        android:numColumns="3"
+        android:verticalSpacing="14dp"
+        android:horizontalSpacing="10dp"
+        android:stretchMode="columnWidth" />
 </LinearLayout>

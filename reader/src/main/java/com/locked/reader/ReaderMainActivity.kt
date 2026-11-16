@@ -31,7 +31,7 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private lateinit var pdfScrollView: ScrollView
     private lateinit var pdfImageView: ImageView
 
-    private lateinit var btnBackToLibrary: Button
+    private lateinit var btnHomeLauncher: Button
     private lateinit var btnZoomIn: Button
     private lateinit var btnZoomOut: Button
     private lateinit var btnPrevPage: Button
@@ -72,7 +72,7 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         pdfScrollView = findViewById(R.id.pdfScrollView)
         pdfImageView = findViewById(R.id.pdfImageView)
 
-        btnBackToLibrary = findViewById(R.id.btnBackToLibrary)
+        btnHomeLauncher = findViewById(R.id.btnHomeLauncher)
         btnZoomIn = findViewById(R.id.btnZoomIn)
         btnZoomOut = findViewById(R.id.btnZoomOut)
         btnPrevPage = findViewById(R.id.btnPrevPage)
@@ -88,7 +88,12 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         handleIncomingIntent(intent)
         updateToolbarVisibility()
 
-        btnBackToLibrary.setOnClickListener {
+        btnHomeLauncher.setOnClickListener {
+            val homeIntent = Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_HOME)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            startActivity(homeIntent)
             finish()
         }
 
@@ -305,7 +310,7 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun updateToolbarVisibility() {
-        btnBackToLibrary.visibility = View.VISIBLE
+        btnHomeLauncher.visibility = View.VISIBLE
         btnZoomIn.visibility = View.VISIBLE
         btnZoomOut.visibility = View.VISIBLE
 

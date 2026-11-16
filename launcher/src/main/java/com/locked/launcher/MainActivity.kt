@@ -5,27 +5,32 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ResolveInfo
+import android.graphics.*
+import android.graphics.drawable.GradientDrawable
+import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.ParcelFileDescriptor
 import android.provider.Settings
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
-import android.util.TypedValue
+import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import java.io.File
+import java.util.zip.ZipFile
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var prefs: android.content.SharedPreferences
     private lateinit var tvHeaderTitle: TextView
-    private lateinit var listBooksOrApps: ListView
+    private lateinit var gridBooksOrApps: GridView
     private lateinit var topControlBar: LinearLayout
     private lateinit var searchBar: EditText
     private lateinit var btnToggleAppsView: Button
@@ -37,6 +42,7 @@ class MainActivity : AppCompatActivity() {
     private var showingAppsMode = false
     private var allBooks: List<File> = emptyList()
     private var allApps: List<ResolveInfo> = emptyList()
+    private val coverCache = mutableMapOf<String, Bitmap>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -47,7 +53,7 @@ class MainActivity : AppCompatActivity() {
 
         prefs = getSharedPreferences("LauncherPrefs", Context.MODE_PRIVATE)
         tvHeaderTitle = findViewById(R.id.tvHeaderTitle)
-        listBooksOrApps = findViewById(R.id.listBooksOrApps)
+        gridBooksOrApps = findViewById(R.id.gridBooksOrApps)
         topControlBar = findViewById(R.id.topControlBar)
         searchBar = findViewById(R.id.searchBar)
         btnToggleAppsView = findViewById(R.id.btnToggleAppsView)
@@ -64,7 +70,7 @@ class MainActivity : AppCompatActivity() {
                 isUnlocked = false
                 showingAppsMode = false
                 applyLockState()
-                Toast.makeText(this, "تم قفل اللانشر على الكتب", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "تم قفل اللانشر", Toast.LENGTH_SHORT).show()
             } else {
                 promptForPin()
             }
@@ -73,15 +79,16 @@ class MainActivity : AppCompatActivity() {
         btnToggleAppsView.setOnClickListener {
             showingAppsMode = !showingAppsMode
             btnToggleAppsView.text = if (showingAppsMode) "عرض الكتب" else "التطبيقات"
-            tvHeaderTitle.text = if (showingAppsMode) "التطبيقات المثبتة" else "مكتبتي"
-            refreshList("")
+            tvHeaderTitle.text = if (showingAppsMode) "التطبيقات" else "المكتبة"
+            gridBooksOrApps.numColumns = if (showingAppsMode) 2 else 3
+            refreshGrid("")
         }
 
         btnSystemSettings.setOnClickListener { startActivity(Intent(Settings.ACTION_SETTINGS)) }
         btnWifi.setOnClickListener { startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
 
         searchBar.addTextChangedListener(object : TextWatcher {
-            override fun afterTextChanged(s: Editable?) { refreshList(s.toString()) }
+            override fun afterTextChanged(s: Editable?) { refreshGrid(s.toString()) }
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
         })
@@ -90,7 +97,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         loadBooks()
-        if (!showingAppsMode) refreshList(searchBar.text.toString())
+        if (!showingAppsMode) refreshGrid(searchBar.text.toString())
     }
 
     private fun requestStoragePermission() {
@@ -104,6 +111,7 @@ class MainActivity : AppCompatActivity() {
     private fun applyLockState() {
         val allowSearch = prefs.getBoolean("ALLOW_SEARCH", false)
         val allowWifi = prefs.getBoolean("ALLOW_WIFI", false)
+        gridBooksOrApps.numColumns = 3
 
         if (isUnlocked) {
             btnLockToggle.setImageResource(android.R.drawable.ic_partial_secure)
@@ -114,14 +122,14 @@ class MainActivity : AppCompatActivity() {
             btnWifi.visibility = View.VISIBLE
         } else {
             btnLockToggle.setImageResource(android.R.drawable.ic_lock_lock)
-            tvHeaderTitle.text = "مكتبتي"
+            tvHeaderTitle.text = "المكتبة"
             searchBar.visibility = if (allowSearch) View.VISIBLE else View.GONE
             btnWifi.visibility = if (allowWifi) View.VISIBLE else View.GONE
             btnToggleAppsView.visibility = View.GONE
             btnSystemSettings.visibility = View.GONE
             topControlBar.visibility = if (allowSearch || allowWifi) View.VISIBLE else View.GONE
         }
-        refreshList("")
+        refreshGrid("")
     }
 
     private fun loadBooks() {
@@ -137,43 +145,32 @@ class MainActivity : AppCompatActivity() {
         allApps = packageManager.queryIntentActivities(intent, 0).filter { it.activityInfo.packageName != packageName }
     }
 
-    private fun refreshList(query: String) {
+    private fun refreshGrid(query: String) {
         if (showingAppsMode && isUnlocked) {
             val appNames = allApps.map { it.loadLabel(packageManager).toString() }
-            listBooksOrApps.adapter = createLargeTextAdapter(appNames)
-            listBooksOrApps.setOnItemClickListener { _, _, pos, _ ->
+            gridBooksOrApps.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, appNames)
+            gridBooksOrApps.setOnItemClickListener { _, _, pos, _ ->
                 val launch = packageManager.getLaunchIntentForPackage(allApps[pos].activityInfo.packageName)
                 if (launch != null) startActivity(launch)
             }
-            listBooksOrApps.setOnItemLongClickListener(null)
+            gridBooksOrApps.setOnItemLongClickListener(null)
             return
         }
 
-        // وضع عرض الكتب (الوضع الافتراضي)
         val hiddenBooks = prefs.getStringSet("HIDDEN_BOOKS", emptySet()) ?: emptySet()
         val visibleBooks = if (isUnlocked) allBooks else allBooks.filter { it.name !in hiddenBooks }
         val filteredBooks = if (query.isBlank()) visibleBooks
         else visibleBooks.filter { it.nameWithoutExtension.contains(query, ignoreCase = true) }
 
-        val bookTitles = if (filteredBooks.isEmpty()) {
-            listOf("لا توجد كتب في مجلد MyBooks")
-        } else {
-            filteredBooks.map { file ->
-                val prefix = if (isUnlocked && file.name in hiddenBooks) "[مخفي] " else "📖 "
-                "$prefix${file.nameWithoutExtension}"
+        gridBooksOrApps.adapter = BookCoverAdapter(filteredBooks, hiddenBooks)
+
+        gridBooksOrApps.setOnItemClickListener { _, _, position, _ ->
+            if (filteredBooks.isNotEmpty()) {
+                openBookInReader(filteredBooks[position])
             }
         }
 
-        listBooksOrApps.adapter = createLargeTextAdapter(bookTitles)
-
-        listBooksOrApps.setOnItemClickListener { _, _, position, _ ->
-            if (filteredBooks.isEmpty()) return@setOnItemClickListener
-            val selectedBook = filteredBooks[position]
-            openBookInReader(selectedBook)
-        }
-
-        // الضغط المطول على الكتاب أثناء فتح القفل لإخفائه أو إظهاره للقارئ
-        listBooksOrApps.setOnItemLongClickListener { _, _, position, _ ->
+        gridBooksOrApps.setOnItemLongClickListener { _, _, position, _ ->
             if (isUnlocked && filteredBooks.isNotEmpty()) {
                 val bookName = filteredBooks[position].name
                 val currentHidden = hiddenBooks.toMutableSet()
@@ -185,10 +182,123 @@ class MainActivity : AppCompatActivity() {
                     Toast.makeText(this, "تم إخفاء الكتاب في وضع القفل", Toast.LENGTH_SHORT).show()
                 }
                 prefs.edit().putStringSet("HIDDEN_BOOKS", currentHidden).apply()
-                refreshList(searchBar.text.toString())
+                refreshGrid(searchBar.text.toString())
             }
             true
         }
+    }
+
+    inner class BookCoverAdapter(
+        private val books: List<File>,
+        private val hiddenBooks: Set<String>
+    ) : BaseAdapter() {
+        override fun getCount(): Int = books.size
+        override fun getItem(position: Int): Any = books[position]
+        override fun getItemId(position: Int): Long = position.toLong()
+
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
+            val view = convertView ?: LayoutInflater.from(this@MainActivity)
+                .inflate(R.layout.item_book_grid, parent, false)
+
+            val book = books[position]
+            val ivCover = view.findViewById<ImageView>(R.id.ivBookCover)
+            val tvFormat = view.findViewById<TextView>(R.id.tvBookFormat)
+            val tvTitle = view.findViewById<TextView>(R.id.tvBookTitle)
+
+            // إضافة إطار أسود حاد للغلاف وشارة الصيغة مثل أجهزة Boox
+            val border = GradientDrawable().apply {
+                setColor(Color.WHITE)
+                setStroke(3, Color.BLACK)
+            }
+            (ivCover.parent as View).background = border
+
+            val badgeBorder = GradientDrawable().apply {
+                setColor(Color.WHITE)
+                setStroke(2, Color.BLACK)
+            }
+            tvFormat.background = badgeBorder
+            tvFormat.text = book.extension.lowercase()
+
+            val prefix = if (isUnlocked && book.name in hiddenBooks) "[مخفي] " else ""
+            tvTitle.text = "$prefix${book.nameWithoutExtension}"
+
+            ivCover.setImageBitmap(getBookCoverBitmap(book))
+            return view
+        }
+    }
+
+    private fun getBookCoverBitmap(file: File): Bitmap {
+        coverCache[file.absolutePath]?.let { return it }
+
+        val bmp: Bitmap? = when (file.extension.lowercase()) {
+            "pdf" -> extractPdfCover(file)
+            "epub" -> extractEpubCover(file)
+            else -> null
+        }
+
+        val finalBmp = bmp ?: createFallbackCover(file.nameWithoutExtension)
+        coverCache[file.absolutePath] = finalBmp
+        return finalBmp
+    }
+
+    private fun extractPdfCover(file: File): Bitmap? {
+        return try {
+            val pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+            val renderer = PdfRenderer(pfd)
+            if (renderer.pageCount > 0) {
+                val page = renderer.openPage(0)
+                val bitmap = Bitmap.createBitmap(300, 420, Bitmap.Config.ARGB_8888)
+                bitmap.eraseColor(Color.WHITE)
+                page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                page.close()
+                renderer.close()
+                pfd.close()
+                bitmap
+            } else {
+                renderer.close()
+                pfd.close()
+                null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun extractEpubCover(file: File): Bitmap? {
+        return try {
+            ZipFile(file).use { zip ->
+                val entries = zip.entries().toList()
+                val coverEntry = entries.firstOrNull {
+                    !it.isDirectory && it.name.contains("cover", ignoreCase = true) &&
+                            (it.name.endsWith(".jpg", true) || it.name.endsWith(".jpeg", true) || it.name.endsWith(".png", true))
+                } ?: entries.firstOrNull {
+                    !it.isDirectory && (it.name.endsWith(".jpg", true) || it.name.endsWith(".jpeg", true) || it.name.endsWith(".png", true))
+                }
+
+                if (coverEntry != null) {
+                    zip.getInputStream(coverEntry).use { stream ->
+                        BitmapFactory.decodeStream(stream)
+                    }
+                } else null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun createFallbackCover(title: String): Bitmap {
+        val bmp = Bitmap.createBitmap(300, 420, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        canvas.drawColor(Color.parseColor("#F4F4F4"))
+        val paint = Paint().apply {
+            color = Color.BLACK
+            textSize = 28f
+            textAlign = Paint.Align.CENTER
+            isAntiAlias = true
+            typeface = Typeface.DEFAULT_BOLD
+        }
+        canvas.drawText(title.take(16), 150f, 200f, paint)
+        return bmp
     }
 
     private fun openBookInReader(bookFile: File) {
@@ -201,18 +311,6 @@ class MainActivity : AppCompatActivity() {
             startActivity(intent)
         } catch (e: Exception) {
             Toast.makeText(this, "تأكد من تثبيت تطبيق القارئ البسيط أولاً", Toast.LENGTH_LONG).show()
-        }
-    }
-
-    private fun createLargeTextAdapter(items: List<String>): ArrayAdapter<String> {
-        return object : ArrayAdapter<String>(this, android.R.layout.simple_list_item_1, items) {
-            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
-                val view = super.getView(position, convertView, parent) as TextView
-                view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 24f)
-                view.setPadding(16, 28, 16, 28)
-                view.setTextColor(android.graphics.Color.BLACK)
-                return view
-            }
         }
     }
 
