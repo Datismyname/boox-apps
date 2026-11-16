@@ -31,6 +31,7 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private lateinit var pdfScrollView: ScrollView
     private lateinit var pdfImageView: ImageView
 
+    private lateinit var btnBackToLibrary: Button
     private lateinit var btnZoomIn: Button
     private lateinit var btnZoomOut: Button
     private lateinit var btnPrevPage: Button
@@ -38,7 +39,6 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private lateinit var btnDarkMode: Button
     private lateinit var btnLineSpacing: Button
     private lateinit var btnSpeak: Button
-    private lateinit var btnSelectBook: Button
     private lateinit var btnReaderLock: ImageButton
 
     private var isUnlocked = false
@@ -47,14 +47,12 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var isDark = false
     private var lineSpacing = 1.4f
     private var currentHtmlContent = ""
-    private var currentMode = "TEXT" // TEXT, EPUB, PDF
+    private var currentMode = "TEXT"
 
-    // متغيرات PDF
     private var pdfRenderer: PdfRenderer? = null
     private var currentPdfPageIndex = 0
     private var pdfFileDescriptor: ParcelFileDescriptor? = null
 
-    // متغيرات EPUB
     private var epubChapters: List<String> = emptyList()
     private var currentChapterIndex = 0
 
@@ -74,6 +72,7 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         pdfScrollView = findViewById(R.id.pdfScrollView)
         pdfImageView = findViewById(R.id.pdfImageView)
 
+        btnBackToLibrary = findViewById(R.id.btnBackToLibrary)
         btnZoomIn = findViewById(R.id.btnZoomIn)
         btnZoomOut = findViewById(R.id.btnZoomOut)
         btnPrevPage = findViewById(R.id.btnPrevPage)
@@ -81,16 +80,18 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         btnDarkMode = findViewById(R.id.btnDarkMode)
         btnLineSpacing = findViewById(R.id.btnLineSpacing)
         btnSpeak = findViewById(R.id.btnSpeak)
-        btnSelectBook = findViewById(R.id.btnSelectBook)
         btnReaderLock = findViewById(R.id.btnReaderLock)
 
         epubWebView.settings.javaScriptEnabled = false
         fontSize = prefs.getInt("FONT_SIZE", 26)
 
-        loadLastOrFirstBook()
+        handleIncomingIntent(intent)
         updateToolbarVisibility()
 
-        // تكبير (حروف في EPUB/TXT أو صفحة في PDF)
+        btnBackToLibrary.setOnClickListener {
+            finish()
+        }
+
         btnZoomIn.setOnClickListener {
             if (currentMode == "PDF") {
                 if (pdfZoomScale < 2.5f) {
@@ -104,7 +105,6 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
         }
 
-        // تصغير
         btnZoomOut.setOnClickListener {
             if (currentMode == "PDF") {
                 if (pdfZoomScale > 0.75f) {
@@ -158,8 +158,6 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
         }
 
-        btnSelectBook.setOnClickListener { showBookPickerDialog() }
-
         btnReaderLock.setOnClickListener {
             if (isUnlocked) {
                 isUnlocked = false
@@ -169,6 +167,24 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 unlockReaderSettings()
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingIntent(intent)
+    }
+
+    private fun handleIncomingIntent(intent: Intent?) {
+        val path = intent?.getStringExtra("BOOK_PATH")
+        if (path != null) {
+            val file = File(path)
+            if (file.exists()) {
+                openBookFile(file)
+                return
+            }
+        }
+        loadLastOrFirstBook()
     }
 
     private fun openBookFile(file: File) {
@@ -289,6 +305,7 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun updateToolbarVisibility() {
+        btnBackToLibrary.visibility = View.VISIBLE
         btnZoomIn.visibility = View.VISIBLE
         btnZoomOut.visibility = View.VISIBLE
 
@@ -297,13 +314,11 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             btnDarkMode.visibility = View.VISIBLE
             btnLineSpacing.visibility = View.VISIBLE
             btnSpeak.visibility = View.VISIBLE
-            btnSelectBook.visibility = View.VISIBLE
         } else {
             btnReaderLock.setImageResource(android.R.drawable.ic_lock_lock)
             btnDarkMode.visibility = if (prefs.getBoolean("SHOW_DARK", false)) View.VISIBLE else View.GONE
             btnLineSpacing.visibility = if (prefs.getBoolean("SHOW_SPACING", false)) View.VISIBLE else View.GONE
             btnSpeak.visibility = if (prefs.getBoolean("SHOW_TTS", false)) View.VISIBLE else View.GONE
-            btnSelectBook.visibility = if (prefs.getBoolean("SHOW_BOOKS", true)) View.VISIBLE else View.GONE
         }
     }
 
@@ -332,9 +347,8 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun showAllowedControlsDialog() {
-        val options = arrayOf("إظهار زر الكتب", "إظهار الوضع الليلي", "إظهار تباعد الأسطر", "إظهار القراءة الصوتية")
+        val options = arrayOf("إظهار الوضع الليلي", "إظهار تباعد الأسطر", "إظهار القراءة الصوتية")
         val states = booleanArrayOf(
-            prefs.getBoolean("SHOW_BOOKS", true),
             prefs.getBoolean("SHOW_DARK", false),
             prefs.getBoolean("SHOW_SPACING", false),
             prefs.getBoolean("SHOW_TTS", false)
@@ -343,9 +357,8 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             .setTitle("اختر الأزرار المسموح بظهورها خارج القفل")
             .setMultiChoiceItems(options, states) { _, which, isChecked ->
                 val key = when (which) {
-                    0 -> "SHOW_BOOKS"
-                    1 -> "SHOW_DARK"
-                    2 -> "SHOW_SPACING"
+                    0 -> "SHOW_DARK"
+                    1 -> "SHOW_SPACING"
                     else -> "SHOW_TTS"
                 }
                 prefs.edit().putBoolean(key, isChecked).apply()
@@ -363,41 +376,17 @@ class ReaderMainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }.show()
     }
 
-    private fun getSupportedBooks(): List<File> {
+    private fun loadLastOrFirstBook() {
         val booksDir = File(Environment.getExternalStorageDirectory(), "MyBooks")
         if (!booksDir.exists()) booksDir.mkdirs()
-        return booksDir.listFiles { f ->
-            f.extension.lowercase() in listOf("txt", "epub", "pdf")
-        }?.toList() ?: emptyList()
-    }
-
-    private fun loadLastOrFirstBook() {
-        val files = getSupportedBooks()
-        if (files.isNotEmpty()) {
-            openBookFile(files[0])
-        } else {
-            currentMode = "TEXT"
-            currentHtmlContent = "<p>ضع ملفات الكتب (PDF أو EPUB أو TXT) داخل مجلد MyBooks في الذاكرة الداخلية.</p>"
+        val files = booksDir.listFiles { f -> f.extension.lowercase() in listOf("txt", "epub", "pdf") }
+        if (!files.isNullOrEmpty()) openBookFile(files[0])
+        else {
+            currentHtmlContent = "<p>اختر كتاباً من المكتبة للبدء.</p>"
             refreshWebViewContent()
         }
     }
 
-    private fun showBookPickerDialog() {
-        val files = getSupportedBooks()
-        if (files.isEmpty()) {
-            Toast.makeText(this, "لا توجد كتب في مجلد MyBooks", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val names = files.map { "${it.nameWithoutExtension} (${it.extension.uppercase()})" }.toTypedArray()
-        AlertDialog.Builder(this).setTitle("اختر الكتاب").setItems(names) { _, which ->
-            openBookFile(files[which])
-        }.show()
-    }
-
     override fun onInit(status: Int) { if (status == TextToSpeech.SUCCESS) tts?.language = Locale("ar") }
-    override fun onDestroy() {
-        closePdfRenderer()
-        tts?.shutdown()
-        super.onDestroy()
-    }
+    override fun onDestroy() { closePdfRenderer(); tts?.shutdown(); super.onDestroy() }
 }

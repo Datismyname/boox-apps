@@ -14,11 +14,12 @@
         android:paddingBottom="12dp">
 
         <TextView
+            android:id="@+id/tvHeaderTitle"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="المكتبة والتطبيقات"
-            android:textSize="26sp"
+            android:text="مكتبتي"
+            android:textSize="28sp"
             android:textStyle="bold"
             android:textColor="#000000" />
 
@@ -43,7 +44,7 @@
             android:id="@+id/searchBar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="بحث في التطبيقات..."
+            android:hint="بحث عن كتاب..."
             android:textSize="20sp"
             android:textColor="#000000" />
 
@@ -52,27 +53,33 @@
             android:layout_height="wrap_content"
             android:orientation="horizontal">
             <Button
+                android:id="@+id/btnToggleAppsView"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="التطبيقات"
+                android:textSize="16sp" />
+            <Button
                 android:id="@+id/btnWifi"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:text="الواي فاي"
-                android:textSize="18sp" />
+                android:textSize="16sp" />
             <Button
                 android:id="@+id/btnSystemSettings"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="إعدادات النظام"
-                android:textSize="18sp" />
+                :layout_weight="1"
+                android:text="النظام"
+                android:textSize="16sp" />
         </LinearLayout>
     </LinearLayout>
 
-    <GridView
-        android:id="@+id/gridApps"
+    <ListView
+        android:id="@+id/listBooksOrApps"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:numColumns="2"
-        android:verticalSpacing="16dp"
-        android:horizontalSpacing="16dp" />
+        android:divider="#CCCCCC"
+        android:dividerHeight="1dp" />
 </LinearLayout>

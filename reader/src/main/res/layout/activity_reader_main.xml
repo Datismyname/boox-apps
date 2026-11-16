@@ -17,6 +17,14 @@
             android:orientation="horizontal"
             android:gravity="center_vertical">
 
+            <Button
+                android:id="@+id/btnBackToLibrary"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="المكتبة"
+                android:textSize="20sp"
+                android:textStyle="bold" />
+
             <ImageButton
                 android:id="@+id/btnReaderLock"
                 android:layout_width="48dp"
@@ -57,13 +65,6 @@
                 android:visibility="gone" />
 
             <Button
-                android:id="@+id/btnSelectBook"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="الكتب"
-                android:textSize="18sp" />
-
-            <Button
                 android:id="@+id/btnDarkMode"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
@@ -86,13 +87,11 @@
         </LinearLayout>
     </HorizontalScrollView>
 
-    <!-- عارض النصوص و EPUB عبر WebView -->
     <WebView
         android:id="@+id/epubWebView"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <!-- عارض صفحات PDF -->
     <ScrollView
         android:id="@+id/pdfScrollView"
         android:layout_width="match_parent"
