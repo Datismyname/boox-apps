@@ -1,10 +1,12 @@
 package com.unified.ereader
 
+import android.Manifest
 import android.app.AlertDialog
 import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ResolveInfo
 import android.graphics.*
 import android.graphics.drawable.GradientDrawable
@@ -12,6 +14,9 @@ import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.*
 import android.provider.Settings
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.text.Editable
 import android.text.Html
@@ -22,6 +27,14 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import com.tom_roush.pdfbox.pdmodel.PDDocument
+import com.tom_roush.pdfbox.text.PDFTextStripper
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -32,12 +45,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     private lateinit var prefs: android.content.SharedPreferences
 
-    // حاويات الواجهتين
     private lateinit var libraryContainer: LinearLayout
     private lateinit var readerContainer: LinearLayout
 
-    // عناصر المكتبة واللانشر
     private lateinit var tvHeaderTitle: TextView
+    private lateinit var btnVoiceCommand: Button
     private lateinit var gridBooksOrApps: GridView
     private lateinit var libraryControlBar: LinearLayout
     private lateinit var searchBar: EditText
@@ -46,7 +58,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private lateinit var btnWifi: Button
     private lateinit var btnLibraryLock: ImageButton
 
-    // عناصر القارئ المدمج
     private lateinit var epubWebView: WebView
     private lateinit var pdfImageView: ImageView
     private lateinit var touchZoneRight: View
@@ -63,7 +74,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private lateinit var btnLineSpacing: Button
     private lateinit var btnSpeak: Button
 
-    // حالات التطبيق
     private var isInReaderMode = false
     private var isLibraryUnlocked = false
     private var isReaderUnlocked = false
@@ -74,7 +84,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private val coverCache = mutableMapOf<String, Bitmap>()
     private val stateProps = Properties()
 
-    // متغيرات القارئ
     private var fontSize = 26
     private var pdfZoomScale = 1.0f
     private var isDark = false
@@ -82,6 +91,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var currentHtmlContent = ""
     private var currentBookType = "TEXT"
     private var currentBookFile: File? = null
+    private var currentPdfBitmap: Bitmap? = null
 
     private var pdfRenderer: PdfRenderer? = null
     private var currentPdfPageIndex = 0
@@ -92,6 +102,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private var currentTextPage = 0
     private var totalTextPages = 1
     private var tts: TextToSpeech? = null
+    private var speechRecognizer: SpeechRecognizer? = null
 
     private val autoLockHandler = Handler(Looper.getMainLooper())
     private val autoLockRunnable = Runnable {
@@ -110,7 +121,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN)
         setContentView(R.layout.activity_main)
 
-        requestStoragePermission()
+        PDFBoxResourceLoader.init(applicationContext)
+        requestPermissionsIfNeeded()
         setupKioskPolicyIfOwner()
 
         prefs = getSharedPreferences("UnifiedReaderPrefs", Context.MODE_PRIVATE)
@@ -133,6 +145,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         readerContainer = findViewById(R.id.readerContainer)
 
         tvHeaderTitle = findViewById(R.id.tvHeaderTitle)
+        btnVoiceCommand = findViewById(R.id.btnVoiceCommand)
         gridBooksOrApps = findViewById(R.id.gridBooksOrApps)
         libraryControlBar = findViewById(R.id.libraryControlBar)
         searchBar = findViewById(R.id.searchBar)
@@ -186,9 +199,82 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     // ==========================================
-    // أحداث ومنطق المكتبة واللانشر
+    // المساعد الصوتي لفتح الكتب بالأمر الصوتي
+    // ==========================================
+    private fun startVoiceBookAssistant() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 101)
+            return
+        }
+
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            Toast.makeText(this, "التعرف الصوتي غير مدعوم على هذا الجهاز", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        speechRecognizer?.destroy()
+        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ar-SA")
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+        }
+
+        btnVoiceCommand.text = "🎙️ تفضل..."
+        speechRecognizer?.setRecognitionListener(object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) {}
+            override fun onBeginningOfSpeech() {}
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+            override fun onEndOfSpeech() { btnVoiceCommand.text = "🎤 اطلب كتاباً" }
+            override fun onError(error: Int) {
+                btnVoiceCommand.text = "🎤 اطلب كتاباً"
+                Toast.makeText(this@MainActivity, "لم أسمع بوضوح، حاول مرة أخرى", Toast.LENGTH_SHORT).show()
+            }
+            override fun onResults(results: Bundle?) {
+                btnVoiceCommand.text = "🎤 اطلب كتاباً"
+                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                val spokenText = matches?.firstOrNull() ?: return
+                findAndOpenBookByVoice(spokenText)
+            }
+            override fun onPartialResults(partialResults: Bundle?) {}
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+        })
+        speechRecognizer?.startListening(intent)
+    }
+
+    private fun findAndOpenBookByVoice(spokenCommand: String) {
+        val cleanQuery = spokenCommand
+            .replace("افتح", "")
+            .replace("كتاب", "")
+            .replace("اقرأ", "")
+            .replace("شغل", "")
+            .trim()
+
+        if (cleanQuery.isBlank()) return
+
+        val matchedBook = allBooks.firstOrNull {
+            it.nameWithoutExtension.contains(cleanQuery, ignoreCase = true)
+        } ?: allBooks.firstOrNull { book ->
+            val words = cleanQuery.split(" ").filter { it.length > 2 }
+            words.any { word -> book.nameWithoutExtension.contains(word, ignoreCase = true) }
+        }
+
+        if (matchedBook != null) {
+            tts?.speak("تم فتح ${matchedBook.nameWithoutExtension}", TextToSpeech.QUEUE_FLUSH, null, "OPEN_MSG")
+            showReaderView(matchedBook)
+        } else {
+            tts?.speak("لم أجد كتاباً باسم $cleanQuery", TextToSpeech.QUEUE_FLUSH, null, "ERR_MSG")
+            Toast.makeText(this, "لم يتم العثور على: $cleanQuery", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    // ==========================================
+    // أحداث المكتبة واللانشر
     // ==========================================
     private fun setupLibraryEvents() {
+        btnVoiceCommand.setOnClickListener { startVoiceBookAssistant() }
+
         btnLibraryLock.setOnClickListener {
             resetAutoLockTimer()
             if (isLibraryUnlocked) {
@@ -223,11 +309,13 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun applyLibraryLockState() {
         val allowSearch = prefs.getBoolean("ALLOW_SEARCH", false)
         val allowWifi = prefs.getBoolean("ALLOW_WIFI", false)
+        val allowVoice = prefs.getBoolean("ALLOW_VOICE", true)
         gridBooksOrApps.numColumns = 3
 
         if (isLibraryUnlocked) {
             btnLibraryLock.setImageResource(android.R.drawable.ic_partial_secure)
             libraryControlBar.visibility = View.VISIBLE
+            btnVoiceCommand.visibility = View.VISIBLE
             searchBar.visibility = View.VISIBLE
             btnToggleAppsView.visibility = View.VISIBLE
             btnSystemSettings.visibility = View.VISIBLE
@@ -236,6 +324,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         } else {
             btnLibraryLock.setImageResource(android.R.drawable.ic_lock_lock)
             tvHeaderTitle.text = "المكتبة"
+            btnVoiceCommand.visibility = if (allowVoice) View.VISIBLE else View.GONE
             searchBar.visibility = if (allowSearch) View.VISIBLE else View.GONE
             btnWifi.visibility = if (allowWifi) View.VISIBLE else View.GONE
             btnToggleAppsView.visibility = View.GONE
@@ -266,9 +355,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         gridBooksOrApps.adapter = BookCoverAdapter(filteredBooks, hiddenBooks)
 
         gridBooksOrApps.setOnItemClickListener { _, _, position, _ ->
-            if (filteredBooks.isNotEmpty()) {
-                showReaderView(filteredBooks[position])
-            }
+            if (filteredBooks.isNotEmpty()) showReaderView(filteredBooks[position])
         }
 
         gridBooksOrApps.setOnItemLongClickListener { _, _, position, _ ->
@@ -328,7 +415,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     // ==========================================
-    // أحداث ومنطق القارئ المدمج
+    // أحداث القارئ + تلوين زر العلامة + قراءة PDF الذكية
     // ==========================================
     private fun setupReaderEvents() {
         btnHomeLauncher.setOnClickListener { showLibraryView() }
@@ -365,10 +452,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
 
         btnSpeak.setOnClickListener {
-            if (tts?.isSpeaking == true) tts?.stop()
-            else {
-                val plainText = Html.fromHtml(currentHtmlContent, Html.FROM_HTML_MODE_LEGACY).toString().take(3500)
-                tts?.speak(plainText, TextToSpeech.QUEUE_FLUSH, null, "BOOK_TTS")
+            if (tts?.isSpeaking == true) {
+                tts?.stop()
+                btnSpeak.text = "🔊 استماع"
+            } else {
+                speakCurrentPageContent()
             }
         }
 
@@ -382,6 +470,102 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 promptForPin(isForReader = true)
             }
         }
+    }
+
+    // تحديث لون زر "حفظ علامة" ليصبح أسود بالكامل إذا كانت الصفحة الحالية هي المحفوظة
+    private fun updateBookmarkButtonStyle() {
+        val file = currentBookFile ?: return
+        val isCurrentPageBookmarked = if (currentBookType == "PDF") {
+            val bmPage = stateProps.getProperty("bm_page_${file.name}")?.toIntOrNull()
+            bmPage != null && bmPage == currentPdfPageIndex
+        } else {
+            val bmChap = stateProps.getProperty("bm_chap_${file.name}")?.toIntOrNull() ?: 0
+            val bmTpage = stateProps.getProperty("bm_tpage_${file.name}")?.toIntOrNull()
+            bmTpage != null && bmChap == currentChapterIndex && bmTpage == currentTextPage
+        }
+
+        if (isCurrentPageBookmarked) {
+            btnSaveBookmark.setBackgroundColor(Color.BLACK)
+            btnSaveBookmark.setTextColor(Color.WHITE)
+            btnSaveBookmark.text = "✓ محفوظة"
+        } else {
+            btnSaveBookmark.setBackgroundColor(Color.parseColor("#E0E0E0"))
+            btnSaveBookmark.setTextColor(Color.BLACK)
+            btnSaveBookmark.text = "حفظ علامة"
+        }
+    }
+
+    // استخراج النص من PDF (سواء نص مدمج أو صورة عبر OCR) وقراءته صوتياً
+    private fun speakCurrentPageContent() {
+        if (currentBookType != "PDF") {
+            val plainText = Html.fromHtml(currentHtmlContent, Html.FROM_HTML_MODE_LEGACY).toString().take(3800)
+            if (plainText.isNotBlank()) {
+                btnSpeak.text = "⏹ إيقاف"
+                tts?.speak(plainText, TextToSpeech.QUEUE_FLUSH, null, "BOOK_TTS")
+            }
+            return
+        }
+
+        val file = currentBookFile ?: return
+        btnSpeak.text = "⏳ جاري التفريغ..."
+
+        // 1. فحص وجود نص مفرّغ مسبقاً لهذه الصفحة في الكاش
+        val cacheFile = File(Environment.getExternalStorageDirectory(), "MyBooks/.ocr_${file.name}_p${currentPdfPageIndex}.txt")
+        if (cacheFile.exists()) {
+            val cachedText = cacheFile.readText()
+            if (cachedText.isNotBlank()) {
+                btnSpeak.text = "⏹ إيقاف"
+                tts?.speak(cachedText.take(3800), TextToSpeech.QUEUE_FLUSH, null, "PDF_TTS")
+                return
+            }
+        }
+
+        // 2. محاولة استخراج النص المضمن داخل PDF عبر PDFBox في خيط خلفي
+        Thread {
+            var extractedText = ""
+            try {
+                PDDocument.load(file).use { doc ->
+                    val stripper = PDFTextStripper().apply {
+                        startPage = currentPdfPageIndex + 1
+                        endPage = currentPdfPageIndex + 1
+                    }
+                    extractedText = stripper.getText(doc).trim()
+                }
+            } catch (_: Exception) {}
+
+            if (extractedText.length > 15) {
+                cacheFile.writeText(extractedText)
+                runOnUiThread {
+                    btnSpeak.text = "⏹ إيقاف"
+                    tts?.speak(extractedText.take(3800), TextToSpeech.QUEUE_FLUSH, null, "PDF_TTS")
+                }
+            } else {
+                // 3. إذا كان PDF عبارة عن صور ممسوحة ضوئياً، نمرر صورة الصفحة إلى ML Kit OCR
+                val bmp = currentPdfBitmap
+                if (bmp != null) {
+                    val image = InputImage.fromBitmap(bmp, 0)
+                    val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+                    recognizer.process(image)
+                        .addOnSuccessListener { visionText ->
+                            val ocrResult = visionText.text.trim()
+                            if (ocrResult.isNotBlank()) {
+                                cacheFile.writeText(ocrResult)
+                                btnSpeak.text = "⏹ إيقاف"
+                                tts?.speak(ocrResult.take(3800), TextToSpeech.QUEUE_FLUSH, null, "OCR_TTS")
+                            } else {
+                                btnSpeak.text = "🔊 استماع"
+                                Toast.makeText(this, "لم يتم العثور على نص مقروء في هذه الصورة", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                        .addOnFailureListener {
+                            btnSpeak.text = "🔊 استماع"
+                            Toast.makeText(this, "تعذر تفريغ النص من الصفحة", Toast.LENGTH_SHORT).show()
+                        }
+                } else {
+                    runOnUiThread { btnSpeak.text = "🔊 استماع" }
+                }
+            }
+        }.start()
     }
 
     private fun applyReaderToolbarVisibility() {
@@ -404,8 +588,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             btnGotoBookmark.visibility = if (showBm) View.VISIBLE else View.GONE
             btnDarkMode.visibility = if (prefs.getBoolean("SHOW_DARK", false)) View.VISIBLE else View.GONE
             btnLineSpacing.visibility = if (prefs.getBoolean("SHOW_SPACING", false)) View.VISIBLE else View.GONE
-            btnSpeak.visibility = if (prefs.getBoolean("SHOW_TTS", false)) View.VISIBLE else View.GONE
+            btnSpeak.visibility = if (prefs.getBoolean("SHOW_TTS", true)) View.VISIBLE else View.GONE
         }
+        updateBookmarkButtonStyle()
     }
 
     private fun openBookFile(file: File) {
@@ -460,9 +645,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
         page.close()
 
+        currentPdfBitmap = bitmap
         pdfImageView.setImageBitmap(bitmap)
         tvPageStatus.text = "صفحة ${index + 1} من ${renderer.pageCount}"
         saveCurrentReadingPosition()
+        updateBookmarkButtonStyle()
     }
 
     private fun refreshWebViewContent() {
@@ -497,6 +684,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         val chapInfo = if (currentBookType == "EPUB" && epubChapters.size > 1) " (فصل ${currentChapterIndex + 1}/${epubChapters.size})" else ""
         tvPageStatus.text = "صفحة ${currentTextPage + 1} من $totalTextPages$chapInfo"
         saveCurrentReadingPosition()
+        updateBookmarkButtonStyle()
     }
 
     private fun handleNextPage() {
@@ -548,7 +736,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             stateProps.setProperty("bm_tpage_${file.name}", currentTextPage.toString())
         }
         persistStateProps()
-        Toast.makeText(this, "تم حفظ الإشارة المرجعية", Toast.LENGTH_SHORT).show()
+        updateBookmarkButtonStyle()
+        Toast.makeText(this, "تم حفظ علامة هذه الصفحة", Toast.LENGTH_SHORT).show()
     }
 
     private fun gotoBookmarkForCurrentBook() {
@@ -569,9 +758,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
-    // ==========================================
-    // إدارة الرمز السري و Kiosk Mode والملفات
-    // ==========================================
     private fun promptForPin(isForReader: Boolean) {
         val savedPin = prefs.getString("PIN_CODE", "1234")
         val input = EditText(this).apply {
@@ -601,14 +787,17 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun showLibraryControlsDialog() {
-        val features = arrayOf("إظهار بحث الكتب أثناء القفل", "إظهار الواي فاي أثناء القفل")
-        val checked = booleanArrayOf(prefs.getBoolean("ALLOW_SEARCH", false), prefs.getBoolean("ALLOW_WIFI", false))
+        val features = arrayOf("إظهار المساعد الصوتي 🎤 أثناء القفل", "إظهار بحث الكتب أثناء القفل", "إظهار الواي فاي أثناء القفل")
+        val checked = booleanArrayOf(prefs.getBoolean("ALLOW_VOICE", true), prefs.getBoolean("ALLOW_SEARCH", false), prefs.getBoolean("ALLOW_WIFI", false))
         AlertDialog.Builder(this)
             .setTitle("تخصيص المكتبة (اضغط مطولاً على كتاب لإخفائه)")
             .setMultiChoiceItems(features, checked) { _, which, isChecked ->
                 resetAutoLockTimer()
-                if (which == 0) prefs.edit().putBoolean("ALLOW_SEARCH", isChecked).apply()
-                if (which == 1) prefs.edit().putBoolean("ALLOW_WIFI", isChecked).apply()
+                when (which) {
+                    0 -> prefs.edit().putBoolean("ALLOW_VOICE", isChecked).apply()
+                    1 -> prefs.edit().putBoolean("ALLOW_SEARCH", isChecked).apply()
+                    2 -> prefs.edit().putBoolean("ALLOW_WIFI", isChecked).apply()
+                }
             }
             .setNeutralButton("تغيير الرمز السري") { _, _ -> changePinDialog() }
             .setPositiveButton("حفظ", null)
@@ -616,12 +805,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun showReaderControlsDialog() {
-        val options = arrayOf("إظهار أزرار الإشارة المرجعية", "إظهار الوضع الليلي", "إظهار تباعد الأسطر", "إظهار القراءة الصوتية", "منع انطفاء الشاشة أثناء القراءة")
+        val options = arrayOf("إظهار أزرار الإشارة المرجعية", "إظهار زر الاستماع الصوتي 🔊", "إظهار الوضع الليلي", "إظهار تباعد الأسطر", "منع انطفاء الشاشة أثناء القراءة")
         val states = booleanArrayOf(
             prefs.getBoolean("SHOW_BOOKMARKS", true),
+            prefs.getBoolean("SHOW_TTS", true),
             prefs.getBoolean("SHOW_DARK", false),
             prefs.getBoolean("SHOW_SPACING", false),
-            prefs.getBoolean("SHOW_TTS", false),
             prefs.getBoolean("KEEP_SCREEN_ON", true)
         )
         AlertDialog.Builder(this)
@@ -630,9 +819,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 resetAutoLockTimer()
                 when (which) {
                     0 -> prefs.edit().putBoolean("SHOW_BOOKMARKS", isChecked).apply()
-                    1 -> prefs.edit().putBoolean("SHOW_DARK", isChecked).apply()
-                    2 -> prefs.edit().putBoolean("SHOW_SPACING", isChecked).apply()
-                    3 -> prefs.edit().putBoolean("SHOW_TTS", isChecked).apply()
+                    1 -> prefs.edit().putBoolean("SHOW_TTS", isChecked).apply()
+                    2 -> prefs.edit().putBoolean("SHOW_DARK", isChecked).apply()
+                    3 -> prefs.edit().putBoolean("SHOW_SPACING", isChecked).apply()
                     4 -> prefs.edit().putBoolean("KEEP_SCREEN_ON", isChecked).apply()
                 }
             }
@@ -733,11 +922,14 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         pdfRenderer = null; pdfFileDescriptor = null
     }
 
-    private fun requestStoragePermission() {
+    private fun requestPermissionsIfNeeded() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
             val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
             intent.data = Uri.parse("package:$packageName")
             startActivity(intent)
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 101)
         }
     }
 
@@ -801,5 +993,5 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
     override fun onPause() { saveCurrentReadingPosition(); super.onPause() }
     override fun onInit(status: Int) { if (status == TextToSpeech.SUCCESS) tts?.language = Locale("ar") }
-    override fun onDestroy() { closePdfRenderer(); tts?.shutdown(); super.onDestroy() }
+    override fun onDestroy() { speechRecognizer?.destroy(); closePdfRenderer(); tts?.shutdown(); super.onDestroy() }
 }

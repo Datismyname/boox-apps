@@ -29,6 +29,18 @@
                 android:textStyle="bold"
                 android:textColor="#000000" />
 
+            <Button
+                android:id="@+id/btnVoiceCommand"
+                android:layout_width="wrap_content"
+                android:layout_height="46dp"
+                android:layout_marginEnd="8dp"
+                android:background="#000000"
+                android:textColor="#FFFFFF"
+                android:paddingHorizontal="14dp"
+                android:text="🎤 اطلب كتاباً"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+
             <ImageButton
                 android:id="@+id/btnLibraryLock"
                 android:layout_width="46dp"
@@ -150,20 +162,34 @@
                     android:id="@+id/btnSaveBookmark"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
+                    android:layout_marginStart="4dp"
+                    android:paddingHorizontal="12dp"
                     android:text="حفظ علامة"
-                    android:textSize="17sp" />
+                    android:textSize="17sp"
+                    android:textStyle="bold" />
 
                 <Button
                     android:id="@+id/btnGotoBookmark"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
+                    android:layout_marginStart="4dp"
                     android:text="الذهاب للعلامة"
                     android:textSize="17sp" />
+
+                <Button
+                    android:id="@+id/btnSpeak"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="4dp"
+                    android:text="🔊 استماع"
+                    android:textSize="17sp"
+                    android:textStyle="bold" />
 
                 <Button
                     android:id="@+id/btnDarkMode"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
+                    android:layout_marginStart="4dp"
                     android:text="الوضع الليلي"
                     android:textSize="17sp" />
 
@@ -171,14 +197,8 @@
                     android:id="@+id/btnLineSpacing"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
+                    android:layout_marginStart="4dp"
                     android:text="تباعد الأسطر"
-                    android:textSize="17sp" />
-
-                <Button
-                    android:id="@+id/btnSpeak"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="قراءة صوتية"
                     android:textSize="17sp" />
             </LinearLayout>
         </HorizontalScrollView>
