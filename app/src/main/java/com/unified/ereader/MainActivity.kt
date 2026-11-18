@@ -841,7 +841,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     private fun loadBooks() {
         val booksDir = File(Environment.getExternalStorageDirectory(), "MyBooks")
         if (!booksDir.exists()) booksDir.mkdirs()
-        allBooks = booksDir.listFiles { f -> f.extension.lowercase() in listOf("pdf", "epub", "txt") }?.sortedBy { it.name } ?: emptyList()
+        allBooks = booksDir.listFiles { f -> !f.name.startsWith(".") && f.extension.lowercase() in listOf("pdf", "epub", "txt") }?.sortedBy { it.name } ?: emptyList()
     }
 
     private fun loadInstalledApps() {
